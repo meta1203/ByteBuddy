@@ -1,0 +1,376 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template to deploy ByteBuddy React app to S3 and CloudFront'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+    Description: Deployment environment
+  
+  DomainName:
+    Type: String
+    Default: ''
+    Description: (Optional) Domain name for the CloudFront distribution (e.g., app.example.com)
+  
+  CertificateARN:
+    Type: String
+    Default: ''
+    Description: (Optional) ARN of the SSL certificate for the CloudFront distribution
+  
+  ApiEndpoint:
+    Type: String
+    Description: API Gateway endpoint URL (e.g., https://abc123.execute-api.us-east-1.amazonaws.com/dev)
+
+Conditions:
+  HasDomainName: !Not [!Equals [!Ref DomainName, '']]
+  HasCertificate: !Not [!Equals [!Ref CertificateARN, '']]
+
+Resources:
+  # S3 bucket for hosting the React app
+  WebsiteBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      AccessControl: Private
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Application
+          Value: ByteBuddy
+
+  # Bucket policy to allow CloudFront access to the S3 bucket
+  WebsiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebsiteBucket
+      PolicyDocument:
+        Statement:
+          - Action:
+              - s3:GetObject
+            Effect: Allow
+            Resource: !Sub ${WebsiteBucket.Arn}/*
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}
+
+  # CloudFront Origin Access Control
+  CloudFrontOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub ${AWS::StackName}-OAC
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # CloudFront distribution to serve the React app
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Aliases: !If [HasDomainName, [!Ref DomainName], !Ref 'AWS::NoValue']
+        ViewerCertificate: !If 
+          - HasCertificate
+          - AcmCertificateArn: !Ref CertificateARN
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        DefaultRootObject: index.html
+        Enabled: true
+        HttpVersion: http2
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          Compress: true
+          DefaultTTL: 86400
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+          TargetOriginId: s3-website
+          ViewerProtocolPolicy: redirect-to-https
+        # API path pattern to forward to API Gateway
+        CacheBehaviors:
+          - PathPattern: /api/*
+            AllowedMethods:
+              - DELETE
+              - GET
+              - HEAD
+              - OPTIONS
+              - PATCH
+              - POST
+              - PUT
+            CachedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            Compress: true
+            DefaultTTL: 0
+            MaxTTL: 0
+            MinTTL: 0
+            ForwardedValues:
+              QueryString: true
+              Headers:
+                - Authorization
+                - Content-Type
+              Cookies:
+                Forward: all
+            TargetOriginId: api-gateway
+            ViewerProtocolPolicy: https-only
+        Origins:
+          - DomainName: !GetAtt WebsiteBucket.RegionalDomainName
+            Id: s3-website
+            OriginAccessControlId: !GetAtt CloudFrontOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+          - DomainName: !Select [2, !Split ['/', !Ref ApiEndpoint]]
+            Id: api-gateway
+            CustomOriginConfig:
+              HTTPPort: 80
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols:
+                - TLSv1.2
+            OriginPath: !Join ['', ['/', !Select [3, !Split ['/', !Ref ApiEndpoint]]]]
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+        PriceClass: PriceClass_100
+        Tags:
+          - Key: Environment
+            Value: !Ref Environment
+          - Key: Application
+            Value: ByteBuddy
+
+  # IAM role for the deployment Lambda function
+  DeploymentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:DeleteObject
+                Resource:
+                  - !GetAtt WebsiteBucket.Arn
+                  - !Sub ${WebsiteBucket.Arn}/*
+        - PolicyName: CloudFrontInvalidation
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudfront:CreateInvalidation
+                Resource: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}
+
+  # Custom resource to deploy the React app to S3
+  DeploymentLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt DeploymentRole.Arn
+      Runtime: nodejs16.x
+      Timeout: 300
+      MemorySize: 512
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref WebsiteBucket
+          CLOUDFRONT_DISTRIBUTION_ID: !Ref CloudFrontDistribution
+          API_ENDPOINT: !Ref ApiEndpoint
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const s3 = new AWS.S3();
+          const cloudfront = new AWS.CloudFront();
+          const { execSync } = require('child_process');
+          const fs = require('fs');
+          const path = require('path');
+          const { promisify } = require('util');
+          const readdir = promisify(fs.readdir);
+          const stat = promisify(fs.stat);
+          
+          exports.handler = async (event, context) => {
+            try {
+              console.log('Deployment event:', JSON.stringify(event));
+              
+              // Only process CREATE and UPDATE events
+              if (event.RequestType !== 'Create' && event.RequestType !== 'Update') {
+                await sendResponse(event, context, 'SUCCESS', {});
+                return;
+              }
+              
+              const s3Bucket = process.env.S3_BUCKET;
+              const cloudfrontDistId = process.env.CLOUDFRONT_DISTRIBUTION_ID;
+              const apiEndpoint = process.env.API_ENDPOINT;
+              
+              console.log(`Deploying to bucket: ${s3Bucket}`);
+              console.log(`CloudFront distribution: ${cloudfrontDistId}`);
+              console.log(`API Endpoint: ${apiEndpoint}`);
+              
+              // In a real deployment, you would build the React app here
+              // For this example, we'll just create a simple index.html file
+              const indexHtml = `
+              <!DOCTYPE html>
+              <html lang="en">
+                <head>
+                  <meta charset="UTF-8" />
+                  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+                  <title>ByteBuddy - Event Management</title>
+                  <script>
+                    window.API_ENDPOINT = "${apiEndpoint}";
+                  </script>
+                </head>
+                <body>
+                  <h1>ByteBuddy App</h1>
+                  <p>This is a placeholder. In a real deployment, the built React app would be uploaded here.</p>
+                </body>
+              </html>
+              `;
+              
+              // Upload the index.html file to S3
+              await s3.putObject({
+                Bucket: s3Bucket,
+                Key: 'index.html',
+                Body: indexHtml,
+                ContentType: 'text/html',
+              }).promise();
+              
+              console.log('Uploaded index.html to S3');
+              
+              // Create CloudFront invalidation
+              const invalidationParams = {
+                DistributionId: cloudfrontDistId,
+                InvalidationBatch: {
+                  CallerReference: Date.now().toString(),
+                  Paths: {
+                    Quantity: 1,
+                    Items: ['/*'],
+                  },
+                },
+              };
+              
+              await cloudfront.createInvalidation(invalidationParams).promise();
+              console.log('Created CloudFront invalidation');
+              
+              await sendResponse(event, context, 'SUCCESS', {
+                WebsiteURL: `https://${cloudfrontDistId}.cloudfront.net`,
+              });
+            } catch (error) {
+              console.error('Deployment failed:', error);
+              await sendResponse(event, context, 'FAILED', {}, error.message);
+            }
+          };
+          
+          async function sendResponse(event, context, status, data, reason = '') {
+            const responseBody = {
+              Status: status,
+              Reason: reason,
+              PhysicalResourceId: context.logStreamName,
+              StackId: event.StackId,
+              RequestId: event.RequestId,
+              LogicalResourceId: event.LogicalResourceId,
+              Data: data,
+            };
+            
+            console.log('Sending response:', JSON.stringify(responseBody));
+            
+            const responseUrl = event.ResponseURL;
+            if (!responseUrl) {
+              console.log('No ResponseURL found in event, skipping response');
+              return;
+            }
+            
+            const https = require('https');
+            const url = require('url');
+            
+            return new Promise((resolve, reject) => {
+              const parsedUrl = url.parse(responseUrl);
+              const options = {
+                hostname: parsedUrl.hostname,
+                port: 443,
+                path: parsedUrl.path,
+                method: 'PUT',
+                headers: {
+                  'Content-Type': '',
+                  'Content-Length': Buffer.byteLength(JSON.stringify(responseBody)),
+                },
+              };
+              
+              const request = https.request(options, (response) => {
+                console.log(`Response status code: ${response.statusCode}`);
+                resolve();
+              });
+              
+              request.on('error', (error) => {
+                console.error('Error sending response:', error);
+                reject(error);
+              });
+              
+              request.write(JSON.stringify(responseBody));
+              request.end();
+            });
+          }
+
+  # Custom resource to trigger the deployment
+  DeploymentResource:
+    Type: Custom::ReactDeployment
+    Properties:
+      ServiceToken: !GetAtt DeploymentLambda.Arn
+      DeploymentTimestamp: !Ref AWS::StackName
+
+Outputs:
+  WebsiteBucketName:
+    Description: "Name of the S3 bucket hosting the website"
+    Value: !Ref WebsiteBucket
+
+  CloudFrontDistributionId:
+    Description: "ID of the CloudFront distribution"
+    Value: !Ref CloudFrontDistribution
+
+  CloudFrontDomainName:
+    Description: "Domain name of the CloudFront distribution"
+    Value: !GetAtt CloudFrontDistribution.DomainName
+
+  WebsiteURL:
+    Description: "URL of the website"
+    Value: !Sub https://${CloudFrontDistribution.DomainName}
+
+  CustomDomainURL:
+    Description: "Custom domain URL (if provided)"
+    Value: !If [HasDomainName, !Sub https://${DomainName}, 'Not configured']
+    Condition: HasDomainName

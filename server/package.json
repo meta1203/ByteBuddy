@@ -1,0 +1,16 @@
+{
+  "name": "bytebuddy-backend",
+  "version": "1.0.0",
+  "description": "AWS Lambda function that writes JSON data to DynamoDB",
+  "main": "create.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.0.0",
+    "@aws-sdk/lib-dynamodb": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}

@@ -1,0 +1,325 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Lambda function that writes JSON data to DynamoDB
+Parameters:
+  TableName:
+    Type: String
+    Default: ByteBuddy
+    Description: ByteBuddy table name
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+    - dev
+    - test
+    - prod
+    Description: Deployment environment
+Resources:
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+      - PolicyName: DynamoDBAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+            - dynamodb:Query
+            - dynamodb:Scan
+            - dynamodb:BatchWriteItem
+            Resource:
+              Fn::GetAtt:
+              - DynamoDBTable
+              - Arn
+      Tags:
+      - Key: Environment
+        Value:
+          Ref: Environment
+  DynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName:
+        Ref: TableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: id
+        AttributeType: S
+      - AttributeName: sort
+        AttributeType: S
+      KeySchema:
+      - AttributeName: id
+        KeyType: HASH
+      - AttributeName: sort
+        KeyType: RANGE
+      GlobalSecondaryIndexes:
+      - IndexName: SortIndex
+        KeySchema:
+        - AttributeName: sort
+          KeyType: HASH
+        - AttributeName: id
+          KeyType: RANGE
+        Projection:
+          ProjectionType: ALL
+      Tags:
+      - Key: Environment
+        Value:
+          Ref: Environment
+  CreateEventFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub: ${Environment}-create-event
+      CodeUri: s3://byte-buddy-deployment-1742345631/bf65c3056c9137c175571942b88f7ce9
+      Handler: create-event.handler
+      Runtime: nodejs16.x
+      Architectures:
+      - x86_64
+      MemorySize: 128
+      Timeout: 10
+      Environment:
+        Variables:
+          DYNAMODB_TABLE:
+            Ref: TableName
+      Role:
+        Fn::GetAtt:
+        - LambdaExecutionRole
+        - Arn
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /event
+            Method: post
+      Tags:
+        Environment:
+          Ref: Environment
+  ReadEventFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub: ${Environment}-get-event
+      CodeUri: s3://byte-buddy-deployment-1742345631/bf65c3056c9137c175571942b88f7ce9
+      Handler: get-event.handler
+      Runtime: nodejs16.x
+      Architectures:
+      - x86_64
+      MemorySize: 128
+      Timeout: 10
+      Environment:
+        Variables:
+          DYNAMODB_TABLE:
+            Ref: TableName
+      Role:
+        Fn::GetAtt:
+        - LambdaExecutionRole
+        - Arn
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /event/{id}
+            Method: get
+      Tags:
+        Environment:
+          Ref: Environment
+  CreatePersonFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub: ${Environment}-create-person
+      CodeUri: s3://byte-buddy-deployment-1742345631/bf65c3056c9137c175571942b88f7ce9
+      Handler: create-person.handler
+      Runtime: nodejs16.x
+      Architectures:
+      - x86_64
+      MemorySize: 128
+      Timeout: 10
+      Environment:
+        Variables:
+          DYNAMODB_TABLE:
+            Ref: TableName
+      Role:
+        Fn::GetAtt:
+        - LambdaExecutionRole
+        - Arn
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /event/{id}/person
+            Method: post
+      Tags:
+        Environment:
+          Ref: Environment
+  GetPersonFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub: ${Environment}-get-person
+      CodeUri: s3://byte-buddy-deployment-1742345631/bf65c3056c9137c175571942b88f7ce9
+      Handler: get-person.handler
+      Runtime: nodejs16.x
+      Architectures:
+      - x86_64
+      MemorySize: 128
+      Timeout: 10
+      Environment:
+        Variables:
+          DYNAMODB_TABLE:
+            Ref: TableName
+      Role:
+        Fn::GetAtt:
+        - LambdaExecutionRole
+        - Arn
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /event/{id}/person/{code}
+            Method: get
+      Tags:
+        Environment:
+          Ref: Environment
+  DeletePersonFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub: ${Environment}-delete-person
+      CodeUri: s3://byte-buddy-deployment-1742345631/bf65c3056c9137c175571942b88f7ce9
+      Handler: delete-person.handler
+      Runtime: nodejs16.x
+      Architectures:
+      - x86_64
+      MemorySize: 128
+      Timeout: 10
+      Environment:
+        Variables:
+          DYNAMODB_TABLE:
+            Ref: TableName
+      Role:
+        Fn::GetAtt:
+        - LambdaExecutionRole
+        - Arn
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /event/{id}/person/{code}
+            Method: delete
+      Tags:
+        Environment:
+          Ref: Environment
+  GetPeopleByKeywordFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub: ${Environment}-get-people-by-keyword
+      CodeUri: s3://byte-buddy-deployment-1742345631/bf65c3056c9137c175571942b88f7ce9
+      Handler: get-people-by-keyword.handler
+      Runtime: nodejs16.x
+      Architectures:
+      - x86_64
+      MemorySize: 128
+      Timeout: 10
+      Environment:
+        Variables:
+          DYNAMODB_TABLE:
+            Ref: TableName
+      Role:
+        Fn::GetAtt:
+        - LambdaExecutionRole
+        - Arn
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /event/{id}/person/keyword/{keyword}
+            Method: get
+      Tags:
+        Environment:
+          Ref: Environment
+Outputs:
+  CreateEventFunction:
+    Description: Create Event Lambda Function ARN
+    Value:
+      Fn::GetAtt:
+      - CreateEventFunction
+      - Arn
+  ReadEventFunction:
+    Description: Get Event Lambda Function ARN
+    Value:
+      Fn::GetAtt:
+      - ReadEventFunction
+      - Arn
+  CreatePersonFunction:
+    Description: Create Person Lambda Function ARN
+    Value:
+      Fn::GetAtt:
+      - CreatePersonFunction
+      - Arn
+  GetPersonFunction:
+    Description: Get Person Lambda Function ARN
+    Value:
+      Fn::GetAtt:
+      - GetPersonFunction
+      - Arn
+  DeletePersonFunction:
+    Description: Delete Person Lambda Function ARN
+    Value:
+      Fn::GetAtt:
+      - DeletePersonFunction
+      - Arn
+  LambdaExecutionRole:
+    Description: IAM Role created for all Lambda functions
+    Value:
+      Fn::GetAtt:
+      - LambdaExecutionRole
+      - Arn
+  CreateEventApiEndpoint:
+    Description: API Gateway endpoint URL for creating events
+    Value:
+      Fn::Sub: https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/event
+  ReadEventApiEndpoint:
+    Description: API Gateway endpoint URL for getting events
+    Value:
+      Fn::Sub: https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/event/{id}
+  CreatePersonApiEndpoint:
+    Description: API Gateway endpoint URL for creating persons
+    Value:
+      Fn::Sub: https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/event/{id}/person
+  GetPersonApiEndpoint:
+    Description: API Gateway endpoint URL for getting persons
+    Value:
+      Fn::Sub: https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/event/{id}/person/{code}
+  DeletePersonApiEndpoint:
+    Description: API Gateway endpoint URL for deleting persons
+    Value:
+      Fn::Sub: https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/event/{id}/person/{code}
+  GetPeopleByKeywordFunction:
+    Description: Get People By Keyword Lambda Function ARN
+    Value:
+      Fn::GetAtt:
+      - GetPeopleByKeywordFunction
+      - Arn
+  GetPeopleByKeywordApiEndpoint:
+    Description: API Gateway endpoint URL for getting people by keyword
+    Value:
+      Fn::Sub: https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/event/{id}/person/keyword/{keyword}
+  DynamoDBTableName:
+    Description: DynamoDB table name
+    Value:
+      Ref: DynamoDBTable
